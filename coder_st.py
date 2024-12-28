@@ -10,6 +10,13 @@ load_dotenv()
 
 st.write("""# AutoGen Chat Agents""")
 
+# Create a container for messages at the start
+message_container = st.empty()
+
+# Create a session state for messages if it doesn't exist
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+
 # Update environment variables for Azure
 azure_api_base = os.environ.get("AZURE_OPENAI_ENDPOINT")
 azure_api_key = os.environ.get("AZURE_OPENAI_API_KEY")
@@ -28,17 +35,47 @@ config_list = [
 llm_config = {"config_list": config_list}
 
 
+# After the initial imports, add this helper function
+def scroll_to_bottom():
+    js = """
+        <script>
+            function scroll() {
+                var chatContainer = parent.document.querySelector('[data-testid="stChatMessageContainer"]');
+                if (chatContainer) {
+                    chatContainer.scrollTop = chatContainer.scrollHeight;
+                }
+            }
+            scroll();
+        </script>
+    """
+    st.markdown(js, unsafe_allow_html=True)
+
+
 class TrackableAssistantAgent(AssistantAgent):
     def _process_received_message(self, message, sender, silent):
-        with st.chat_message(sender.name):
-            st.markdown(message)
+        # Add message to session state and update display
+        st.session_state.messages.append(
+            {"role": sender.name, "content": message}
+        )
+        with message_container.container():
+            for msg in st.session_state.messages:
+                with st.chat_message(msg["role"]):
+                    st.markdown(msg["content"])
+            scroll_to_bottom()
         return super()._process_received_message(message, sender, silent)
 
 
 class TrackableUserProxyAgent(UserProxyAgent):
     def _process_received_message(self, message, sender, silent):
-        with st.chat_message(sender.name):
-            st.markdown(message)
+        # Add message to session state and update display
+        st.session_state.messages.append(
+            {"role": sender.name, "content": message}
+        )
+        with message_container.container():
+            for msg in st.session_state.messages:
+                with st.chat_message(msg["role"]):
+                    st.markdown(msg["content"])
+            scroll_to_bottom()
         return super()._process_received_message(message, sender, silent)
 
 
@@ -95,9 +132,9 @@ assistant = TrackableAssistantAgent(
 # create a UserProxyAgent instance named "user_proxy"
 user_proxy = TrackableUserProxyAgent(
     name="user_proxy",
-    # human_input_mode="TERMINATE",  # or "NEVER"
-    human_input_mode="NEVER",  # or "NEVER"
-    max_consecutive_auto_reply=5,
+    human_input_mode="TERMINATE",  # or "NEVER"
+    # human_input_mode="NEVER",  # or "NEVER"
+    max_consecutive_auto_reply=10,
     is_termination_msg=lambda x: "content" in x
     and x["content"] is not None
     and x["content"].rstrip().endswith("TERMINATE"),
@@ -109,8 +146,19 @@ user_proxy = TrackableUserProxyAgent(
 )
 
 with st.container():
+    # Display existing messages
+    with message_container.container():
+        for msg in st.session_state.messages:
+            with st.chat_message(msg["role"]):
+                st.markdown(msg["content"])
+
     user_input = st.chat_input("Type something...")
     if user_input:
+        # Add user input to messages
+        st.session_state.messages.append(
+            {"role": "user", "content": user_input}
+        )
+
         if not azure_api_key or not azure_api_base or not azure_deployment:
             st.warning(
                 "You must provide valid Azure OpenAI credentials (API base, key, and deployment name)",
@@ -130,4 +178,7 @@ with st.container():
             )
 
         # Run the asynchronous function within the event loop
-        loop.run_until_complete(initiate_chat())
+        try:
+            loop.run_until_complete(initiate_chat())
+        finally:
+            loop.close()
